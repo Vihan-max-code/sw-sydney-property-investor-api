@@ -136,7 +136,11 @@ function analyseProperty(price, beds, baths, landSize, propertyType, suburbData,
 
   // Growth projection
   var growth = getProjectedGrowth(sub);
+  if (price > 2000000) growth = Math.min(growth, 3.0);
+  else if (price > 1500000) growth = Math.min(growth, 4.5);
+  else if (price > 1200000) growth = Math.min(growth, 6.0);
   var proj5 = Math.round(price * Math.pow(1 + growth / 100, 5));
+  if (proj5 > price * 1.50) proj5 = Math.round(price * 1.50);
   var equity5 = proj5 - price;
 
   // Price prediction
