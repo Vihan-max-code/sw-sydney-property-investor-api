@@ -1,62 +1,151 @@
-// ─── Property Investment Analyser ─────────────────────────────────────────────
-// Calculates investment score, yield, projections, cashflow from suburb data
+// SW Sydney Property Investor — Analyser v3
+// 3 Models: Rent (ML), Price (range-aware), 5yr Projection (infrastructure)
 
-function analyseProperty(price, beds, baths, landSize, propertyType, suburbData) {
-  if (!price || price < 50000 || price > 10000000) return null;
+var ML = {
+  intercept: 497.4,
+  c: {
+    beds: 68.6, baths: 59.9, cars: 11.8,
+    is_unit: -42.8, is_townhouse: -50.4,
+    "suburb_Glenfield": -155.8, "suburb_Holsworthy": -75.0,
+    "suburb_Leumeah": -198.8, "suburb_Macquarie Fields": -153.4, "suburb_Minto": -156.2
+  }
+};
 
-  const isDuplex = /duplex|dual/i.test(propertyType || "");
-  const isUnit = /unit|apartment|studio/i.test(propertyType || "");
+var PR = {
+  "Macquarie Fields": { g: 7.52 },
+  "Minto": { g: 7.83 },
+  "Leumeah": { g: 7.76 },
+  "Glenfield": { g: 9.56 },
+  "Holsworthy": { g: 2.00 },
+  "East Hills": { g: 6.31 }
+};
 
-  // Get suburb-specific medians (fallback to defaults if suburb data unavailable)
-  const medianHouse = suburbData?.house?.medianPrice || 1000000;
-  const medianUnit = suburbData?.unit?.medianPrice || 688000;
-  const medianRentHouse = suburbData?.house?.medianRent || 620;
-  const medianRentUnit = suburbData?.unit?.medianRent || 530;
-  const growth = isUnit
-    ? (suburbData?.unit?.annualGrowth || suburbData?.house?.annualGrowth || 8)
-    : (suburbData?.house?.annualGrowth || 8);
-  const dom = isUnit
-    ? (suburbData?.unit?.daysOnMarket || 20)
-    : (suburbData?.house?.daysOnMarket || 15);
+var INF = {
+  "Macquarie Fields": { a: 0.06 },
+  "Minto": { a: 0.00 },
+  "Leumeah": { a: 0.04 },
+  "Glenfield": { a: 0.21 },
+  "Holsworthy": { a: 0.02 },
+  "East Hills": { a: 0.11 }
+};
 
-  // Comparison median
-  const median = isDuplex ? medianHouse * 1.5 : isUnit ? medianUnit : medianHouse;
+function cap(s) {
+  if (!s) return "";
+  return s.split(" ").map(function(w) {
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(" ");
+}
 
-  // Rent estimate
-  const baseRent = isUnit ? medianRentUnit : medianRentHouse;
-  const rentRatios = { 1: 0.58, 2: 0.83, 3: 1.0, 4: 1.16, 5: 1.30, 6: 1.50, 7: 1.67 };
-  const bedKey = Math.min(Math.max(beds || 3, 1), 7);
-  let rent = Math.round(baseRent * (rentRatios[bedKey] || 1.0));
+// MODEL 1: Predict rent using Linear Regression coefficients
+function predictRent(beds, baths, cars, propertyType, suburbName) {
+  var r = ML.intercept;
+  r += (beds || 3) * ML.c.beds;
+  r += (baths || 1) * ML.c.baths;
+  r += (cars || 1) * ML.c.cars;
+  if (propertyType && /unit|apartment|studio/i.test(propertyType)) r += ML.c.is_unit;
+  if (propertyType && /townhouse|villa/i.test(propertyType)) r += ML.c.is_townhouse;
+  var k = "suburb_" + cap(suburbName);
+  if (ML.c[k] !== undefined) r += ML.c[k];
+  return Math.round(Math.max(r, 250));
+}
 
-  // Duplexes: dual income
-  if (isDuplex && beds >= 4) {
-    const halfBeds = Math.ceil(beds / 2);
-    const perSide = Math.round(baseRent * (rentRatios[Math.min(halfBeds, 7)] || 1.0));
-    rent = perSide * 2;
+// MODEL 2: Predict price
+// If a price range is given (low-high), predicts WHERE in the range based on features
+// If no price, predicts from suburb median + infrastructure
+function predictPrice(beds, baths, cars, landSize, propertyType, suburbData, priceLow, priceHigh) {
+  var iu = propertyType && /unit|apartment|studio/i.test(propertyType);
+  var it = propertyType && /townhouse|villa/i.test(propertyType);
+
+  // CASE 1: Price range given — predict position within range
+  if (priceLow && priceHigh && priceHigh > priceLow) {
+    var range = priceHigh - priceLow;
+    var position = 0.5; // start at midpoint
+
+    // More beds = higher in range
+    if ((beds || 3) >= 4) position += 0.15;
+    else if ((beds || 3) <= 2) position -= 0.15;
+
+    // More baths = higher in range
+    if ((baths || 1) >= 3) position += 0.10;
+    else if ((baths || 1) >= 2) position += 0.05;
+
+    // Larger land = higher in range
+    if (landSize && landSize >= 600) position += 0.10;
+    else if (landSize && landSize >= 400) position += 0.05;
+    else if (landSize && landSize < 300) position -= 0.05;
+
+    // Units sit lower in range
+    if (iu) position -= 0.10;
+
+    // Clamp position between 0.1 and 0.9 (never exactly at edges)
+    position = Math.min(0.9, Math.max(0.1, position));
+
+    var predicted = Math.round((priceLow + range * position) / 5000) * 5000;
+    return predicted;
   }
 
-  // Calculations
-  const annualRent = rent * 52;
-  const grossYield = (annualRent / price) * 100;
-  const netYield = grossYield * 0.72; // 28% expenses
-  const vsMedian = ((price - median) / median) * 100;
+  // CASE 2: Single price given — return that price (already known)
+  if (priceLow && !priceHigh) {
+    return priceLow;
+  }
 
-  // Mortgage estimate (P&I, 6.2% variable, 80% LVR, 30yr)
-  const loanAmount = price * 0.8;
-  const monthlyRepayment = (loanAmount / 100000) * 613;
-  const weeklyRepayment = Math.round(monthlyRepayment * 12 / 52);
-  const weekCashflow = rent - weeklyRepayment;
+  // CASE 3: No price at all — predict from suburb median + infrastructure
+  var mh = (suburbData && suburbData.house) ? suburbData.house.medianPrice : 1000000;
+  var mu = (suburbData && suburbData.unit) ? suburbData.unit.medianPrice : 688000;
+  var p = iu ? mu : mh;
 
-  // Projections
-  const proj5 = Math.round(price * Math.pow(1 + growth / 100, 5));
-  const proj10 = Math.round(price * Math.pow(1 + growth / 100, 10));
-  const equity5 = proj5 - price;
+  p = p * (1 + ((beds || 3) - 3) * 0.18);
+  p = p * (1 + ((baths || 1) - 1) * 0.10);
+  p = p * (1 + ((cars || 1) - 1) * 0.03);
+  if (!iu && landSize && landSize > 0) {
+    p = p * (1 + (landSize - 400) * 0.0004);
+  }
+  if (it) p = p * 0.85;
 
-  // ─── SCORE ──────────────────────────────────────────────────────────────
-  let score = 40;
-  const reasons = [];
+  var nm = (suburbData && suburbData.name) ? suburbData.name : "";
+  var inf = INF[cap(nm)];
+  if (inf) p = p * (1 + inf.a);
 
-  // Yield scoring
+  return Math.round(p / 5000) * 5000;
+}
+
+// MODEL 3: 5-year projection using infrastructure-based growth rates
+function getProjectedGrowth(suburbName) {
+  var proj = PR[cap(suburbName)];
+  return proj ? proj.g : 6.0;
+}
+
+// FULL ANALYSIS
+function analyseProperty(price, beds, baths, landSize, propertyType, suburbData, priceLow, priceHigh) {
+  if (!price || price < 50000 || price > 10000000) return null;
+
+  var iu = propertyType && /unit|apartment|studio/i.test(propertyType);
+  var dom = iu
+    ? ((suburbData && suburbData.unit) ? suburbData.unit.daysOnMarket : 20)
+    : ((suburbData && suburbData.house) ? suburbData.house.daysOnMarket : 15);
+  var median = iu
+    ? ((suburbData && suburbData.unit) ? suburbData.unit.medianPrice : 688000)
+    : ((suburbData && suburbData.house) ? suburbData.house.medianPrice : 1000000);
+
+  var vsMedian = ((price - median) / median) * 100;
+  var sub = (suburbData && suburbData.name) ? suburbData.name : "Macquarie Fields";
+
+  // Rent prediction
+  var rent = predictRent(beds, baths, 1, propertyType, sub);
+  var grossYield = (rent * 52 / price) * 100;
+
+  // Growth projection
+  var growth = getProjectedGrowth(sub);
+  var proj5 = Math.round(price * Math.pow(1 + growth / 100, 5));
+  var equity5 = proj5 - price;
+
+  // Price prediction
+  var modelPrice = predictPrice(beds, baths, 1, landSize, propertyType, suburbData, priceLow, priceHigh);
+
+  // Score
+  var score = 40;
+  var reasons = [];
+
   if (grossYield >= 5) { score += 25; reasons.push("Excellent yield"); }
   else if (grossYield >= 4.5) { score += 20; reasons.push("Strong yield"); }
   else if (grossYield >= 4) { score += 16; reasons.push("Good yield"); }
@@ -64,41 +153,42 @@ function analyseProperty(price, beds, baths, landSize, propertyType, suburbData)
   else if (grossYield >= 3) { score += 8; reasons.push("Average yield"); }
   else if (grossYield >= 2.5) { score += 4; reasons.push("Below-avg yield"); }
 
-  // Value scoring
   if (vsMedian < -30) { score += 15; reasons.push("Deep value"); }
   else if (vsMedian < -15) { score += 12; reasons.push("Well below median"); }
   else if (vsMedian < -5) { score += 8; reasons.push("Below median"); }
   else if (vsMedian < 5) { score += 5; reasons.push("At median"); }
 
-  // Land scoring
   if (landSize >= 700) { score += 10; reasons.push("Large land"); }
   else if (landSize >= 500) { score += 7; reasons.push("Good land"); }
   else if (landSize >= 300) { score += 4; }
 
-  // Property type bonuses
-  if (isDuplex) { score += 12; reasons.push("Dual income"); }
   if (beds >= 3 && beds <= 4) { score += 5; reasons.push("High-demand config"); }
   else if (beds >= 5) { score += 3; reasons.push("Large home"); }
   else if (beds === 2) { score += 3; }
   if (baths >= 2 && beds >= 3) score += 3;
 
   score = Math.min(Math.max(score, 10), 98);
-  const verdict = score >= 80 ? "STRONG BUY" : score >= 65 ? "BUY" : score >= 50 ? "HOLD" : "WEAK";
-  const color = score >= 80 ? "#10b981" : score >= 65 ? "#22c55e" : score >= 50 ? "#f59e0b" : "#ef4444";
+  var verdict = score >= 80 ? "STRONG BUY" : score >= 65 ? "BUY" : score >= 50 ? "HOLD" : "WEAK";
+  var color = score >= 80 ? "#10b981" : score >= 65 ? "#22c55e" : score >= 50 ? "#f59e0b" : "#ef4444";
 
   return {
-    score, verdict, color, reasons, isDuplex,
+    score: score,
+    verdict: verdict,
+    color: color,
+    reasons: reasons,
     grossYield: grossYield.toFixed(2),
-    netYield: netYield.toFixed(2),
-    rent,
-    annualRent,
-    vsMedian: vsMedian.toFixed(1),
-    weeklyRepayment,
-    weekCashflow,
+    rent: rent,
+    dom: dom,
     growth: growth.toFixed(2),
-    dom,
-    proj5, proj10, equity5
+    proj5: proj5,
+    equity5: equity5,
+    modelPrice: modelPrice
   };
 }
 
-module.exports = { analyseProperty };
+module.exports = {
+  analyseProperty: analyseProperty,
+  predictRent: predictRent,
+  predictPrice: predictPrice,
+  getProjectedGrowth: getProjectedGrowth
+};
