@@ -166,9 +166,11 @@ function analyseProperty(price, beds, baths, landSize, propertyType, suburbData,
 
   // Price prediction
   var modelPrice;
-  if (priceLow && priceHigh && priceHigh > priceLow) {
+  if (priceLow && priceHigh && priceHigh > priceLow && (priceHigh - priceLow) < priceLow * 0.3) {
+    // Range given AND range is reasonable (less than 30% spread)
     modelPrice = predictPrice(beds, baths, 1, landSize, propertyType, suburbData, priceLow, priceHigh);
   } else {
+    // Single price or no range — use the actual listed price
     modelPrice = price;
   }
 
