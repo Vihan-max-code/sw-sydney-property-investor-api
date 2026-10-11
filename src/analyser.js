@@ -38,6 +38,11 @@ function cap(s) {
 
 // MODEL 1: Predict rent using Linear Regression coefficients
 function predictRent(beds, baths, cars, propertyType, suburbName) {
+  // INPUT VALIDATION: training data covers 2-5 beds, 1-3 baths
+  // Higher values = likely parsing error, clamp to model's range
+  if (beds > 6) beds = 6;
+  if (baths > 4) baths = 4;
+  if (cars > 4) cars = 4;
   var r = ML.intercept;
   r += (beds || 3) * ML.c.beds;
   r += (baths || 1) * ML.c.baths;
