@@ -165,7 +165,12 @@ function analyseProperty(price, beds, baths, landSize, propertyType, suburbData,
   var equity5 = proj5 - price;
 
   // Price prediction
-  var modelPrice = predictPrice(beds, baths, 1, landSize, propertyType, suburbData, priceLow, priceHigh);
+  var modelPrice;
+  if (priceLow && priceHigh && priceHigh > priceLow) {
+    modelPrice = predictPrice(beds, baths, 1, landSize, propertyType, suburbData, priceLow, priceHigh);
+  } else {
+    modelPrice = price;
+  }
 
   // Score
   var score = 40;
